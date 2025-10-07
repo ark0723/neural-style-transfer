@@ -5,8 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model import StyleTransfer
-
 
 class ContentLoss(nn.Module):
     """
@@ -15,24 +13,24 @@ class ContentLoss(nn.Module):
     generated image to retain the "content" of the original image.
     """
 
-    def __init__(
-        self,
-    ):
+    def __init__(self, target: torch.Tensor):
         super(ContentLoss, self).__init__()
+        self.target = (
+            target.detach()
+        )  # Detach the target from the computation graph to avoid gradients
         self.loss = torch.tensor(0.0)  # Initialize loss as a tensor
 
-    def forward(self, generated: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, generated: torch.Tensor) -> torch.Tensor:
         """
         Calculates the content loss.
         Args:
             generated (torch.Tensor): The feature map of the generated image.
-            target (torch.Tensor): The feature map of the content image.
         Returns:
             generated: The 'generated' tensor is passed through unmodified.
             The calculated loss is stored in self.loss.
         """
         # 1. Compute the mean squared error between the feature maps of the generated image and the target image.
-        self.loss = F.mse_loss(generated, target)
+        self.loss = F.mse_loss(generated, self.target)
 
         # 2. Return the original 'generated' tensor to allow chaining in a nn.Sequential model.
         return generated
@@ -46,11 +44,11 @@ class StyleLoss(nn.Module):
     style image.
     """
 
-    def __init__(self):
+    def __init__(self, target: torch.Tensor) -> torch.Tensor:
         super(StyleLoss, self).__init__()
         # We store the target Gram matrix to avoid recomputing it on every forward pass.
         # It's detached from the computation graph as it's a fixed target and doesn't require gradients.
-        self.target = None
+        self.target = self.gram_matrix(target).detach()
         self.loss = torch.tensor(0.0)  # Initialize loss as a tensor
 
     def gram_matrix(self, x: torch.Tensor) -> torch.Tensor:
@@ -82,24 +80,18 @@ class StyleLoss(nn.Module):
         # in each feature map. This makes the loss independent of image size.
         return G.div(b * c * d)
 
-    def forward(self, generated: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, generated: torch.Tensor) -> torch.Tensor:
         """
         Calculates the style loss. In style transfer, this module is often used as a
         transparent layer that computes the loss and passes the input through.
 
         Args:
             generated (torch.Tensor): The feature map of the generated image.
-            target (torch.Tensor): The feature map of the style image.
 
         Returns:
             torch.Tensor: The 'generated' tensor is passed through unmodified.
                           The calculated loss is stored in self.loss.
         """
-        # The Gram matrix of the target (style) image only needs to be computed once.
-        # We compute and store it on the first forward pass.
-        if self.target is None:
-            self.target = self.gram_matrix(target).detach()
-
         # Compute the Gram matrix for the generated image on every pass.
         G = self.gram_matrix(generated)
 

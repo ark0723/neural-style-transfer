@@ -7,79 +7,110 @@ feature maps from canonical style and content layers, following Gatys et al.
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from loss import ContentLoss, StyleLoss
 
 
 class StyleTransfer(nn.Module):
-    """Wrapper around VGG19 to extract style/content feature maps.
-
-    This class loads a pretrained VGG19 and provides indices for:
-    - style: conv1_1, conv2_1, conv3_1, conv4_1, conv5_1
-    - content: conv4_2
-
-    Use `forward(x, mode)` to collect the corresponding feature maps.
+    """
+    Builds a style transfer model by injecting loss modules into a VGG19 network.
+    This class handles loading the VGG19 model once and constructing the final
+    sequential model used for training.
     """
 
     def __init__(
         self,
     ):
         super(StyleTransfer, self).__init__()
-        # to do : load vgg19 pre train model
-        self.vgg19 = models.vgg19(pretrained=True)
-        # print(self.vgg19)
+        # Load the VGG19 model and its feature layers just once.
+        vgg19_features = models.vgg19(pretrained=True).features.eval()
 
-        # to do : conv layer seperate
-        # Style: conv1_1, conv2_1, conv3_1, conv4_1, conv5_1, Content: conv4_2 (see the results section in the paper)
-        self.layers = self.vgg19.features
-
-        CONV = {
+        # Define the canonical content and style layers by their indices in the VGG19 model.
+        self.content_layers_indices = {"conv4_2": 21}
+        self.style_layers_indices = {
             "conv1_1": 0,
             "conv2_1": 5,
             "conv3_1": 10,
             "conv4_1": 19,
             "conv5_1": 28,
-            "conv4_2": 21,
         }
-        self.style_layers = [
-            CONV[layer]
-            for layer in ["conv1_1", "conv2_1", "conv3_1", "conv4_1", "conv5_1"]
-        ]
-        self.content_layers = [CONV["conv4_2"]]
 
-    def forward(self, x, mode="style"):
-        """Extract feature maps from VGG19 for style or content loss.
+        self.vgg_features = vgg19_features
 
-        Args:
-            x (torch.Tensor): Input tensor shaped (N, 3, H, W).
-            mode (str): "style" to collect style layers, "content" for content layers.
-
-        Returns:
-            list[torch.Tensor]: Collected feature maps, in forward order.
-
-        Raises:
-            NotImplementedError: If `mode` is neither "style" nor "content".
-        """
-        # extract feature maps for style and content
+    def _extract_features(self, x: torch.Tensor, layer_indices: list[int]):
+        """Helper function to extract features from specified layer indices."""
         features = []
-
-        if mode.lower() not in ["style", "content"]:
-            raise NotImplementedError("Invalid mode")
-
-        for i, layer in enumerate(self.layers):
-            x = layer(x)  # pass the input through the layer
-            if mode.lower() == "style" and i in self.style_layers:
-                features.append(x)
-            elif mode.lower() == "content" and i in self.content_layers:
+        for idx, layer in enumerate(self.vgg_features):
+            x = layer(x)
+            if idx in layer_indices:
                 features.append(x)
         return features
 
+    def build_model(self, content_img: torch.Tensor, style_img: torch.Tensor):
+        """
+        Builds the final style transfer model with loss layers.
 
-if __name__ == "__main__":
-    model = StyleTransfer()
-    x = torch.randn(1, 3, 256, 256)  # (batch_size, channel, height, width)
+        Args:
+            content_img (torch.Tensor): The content image tensor.
+            style_img (torch.Tensor): The style image tensor.
 
-    # We call `model(x, ...)` instead of `model.forward(x, ...)`.
-    # This is the standard PyTorch practice because it uses the `nn.Module.__call__`
-    # method, which handles important background tasks (hooks) before calling
-    # our defined `.forward()` method.
-    y = model(x, mode="style")
-    print(y[4].shape)
+        Returns:
+            tuple: A tuple containing:
+                - nn.Sequential: The final model with VGG and loss layers.
+                - list: A list of the content loss modules.
+                - list: A list of the style loss modules.
+        """
+        model = nn.Sequential()
+        content_loss_modules = []
+        style_loss_modules = []
+
+        # --- Step 1: Get target features for loss calculation ---
+        # No gradients needed for this part. only once implemented in the beginning
+        with torch.no_grad():
+            content_target_features = self._extract_features(
+                content_img, self.content_layers_indices.values()
+            )
+            style_target_features = self._extract_features(
+                style_img, self.style_layers_indices.values()
+            )
+
+        # --- Step 2: Build the new model by iterating through VGG19 layers ---
+        for name, layer in self.vgg_features.named_children():
+            # convert the layer's original name (string) back to an integer index
+            layer_idx = int(name)
+
+            # --- Layer Modifications ---
+            if isinstance(layer, nn.ReLU):
+                # Use a non-inplace ReLU to prevent errors during backpropagation
+                layer = nn.ReLU(inplace=False)
+            elif isinstance(layer, nn.MaxPool2d):
+                # Replace MaxPool2d with AvgPool2d for better style transfer results
+                layer = nn.AvgPool2d(
+                    kernel_size=layer.kernel_size,
+                    stride=layer.stride,
+                    padding=layer.padding,
+                )
+
+            # Add layers to the new model
+            model.add_module(name, layer)
+
+            # --- Add Loss Modules ---
+            # Add loss module after the specifided content layer
+            if layer_idx == self.content_layers_indices["conv4_2"]:
+                target = content_target_features.pop(0)
+                content_loss = ContentLoss(target)
+                model.add_module(f"content_loss_{layer_idx}", content_loss)
+                content_loss_modules.append(content_loss)
+
+            if layer_idx in self.style_layers_indices.values():
+                target = style_target_features.pop(0)
+                style_loss = StyleLoss(target)
+                model.add_module(f"style_loss_{layer_idx}", style_loss)
+                style_loss_modules.append(style_loss)
+
+        # Truncate the model after the last loss layer to save computation
+        for i in range(len(model) - 1, -1, -1):
+            if isinstance(model[i], (ContentLoss, StyleLoss)):
+                model = model[: i + 1]
+                break
+
+        return model, content_loss_modules, style_loss_modules
