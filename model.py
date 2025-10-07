@@ -22,6 +22,7 @@ class StyleTransfer(nn.Module):
         # Load the VGG19 model and its feature layers just once.
         # Load VGG19 features and immediately move them to the correct device.
         # Use the modern 'weights' API to avoid deprecation warnings.
+        # .eval() : set the model to evaluation mode (we just need the vgg19 model to extract features, not for training)
         vgg19_features = (
             models.vgg19(weights=models.VGG19_Weights.DEFAULT)
             .features.to(device)
