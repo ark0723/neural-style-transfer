@@ -17,13 +17,16 @@ class StyleTransfer(nn.Module):
     sequential model used for training.
     """
 
-    def __init__(
-        self,
-    ):
+    def __init__(self, device: torch.device):
         super(StyleTransfer, self).__init__()
         # Load the VGG19 model and its feature layers just once.
-        vgg19_features = models.vgg19(pretrained=True).features.eval()
-
+        # Load VGG19 features and immediately move them to the correct device.
+        # Use the modern 'weights' API to avoid deprecation warnings.
+        vgg19_features = (
+            models.vgg19(weights=models.VGG19_Weights.DEFAULT)
+            .features.to(device)
+            .eval()
+        )
         # Define the canonical content and style layers by their indices in the VGG19 model.
         self.content_layers_indices = {"conv4_2": 21}
         self.style_layers_indices = {
