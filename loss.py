@@ -44,11 +44,13 @@ class StyleLoss(nn.Module):
     style image.
     """
 
-    def __init__(self, target: torch.Tensor) -> torch.Tensor:
+    def __init__(self, target_feature: torch.Tensor) -> torch.Tensor:
         super(StyleLoss, self).__init__()
-        # We store the target Gram matrix to avoid recomputing it on every forward pass.
+        # Store the target FEATURE MAP itself, not its Gram matrix.
+        self.target_feature = target_feature.detach()
         # It's detached from the computation graph as it's a fixed target and doesn't require gradients.
-        self.target = self.gram_matrix(target).detach()
+        # We store the target Gram matrix to avoid recomputing it on every forward pass.
+        self.target_gram = self.gram_matrix(self.target_feature).detach()
         self.loss = torch.tensor(0.0)  # Initialize loss as a tensor
 
     def gram_matrix(self, x: torch.Tensor) -> torch.Tensor:
@@ -96,7 +98,7 @@ class StyleLoss(nn.Module):
         G = self.gram_matrix(generated)
 
         # Calculate the mean squared error between the two Gram matrices.
-        self.loss = F.mse_loss(G, self.target)
+        self.loss = F.mse_loss(G, self.target_gram)
 
         # Return the original 'generated' tensor to allow chaining in a nn.Sequential model.
         return generated

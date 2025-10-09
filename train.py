@@ -5,6 +5,13 @@ import torchvision.transforms as transforms
 from torchvision.utils import save_image
 
 from model import StyleTransfer
+from tqdm import tqdm
+
+
+# ImageNet statistics for normalization, defined once as a single source of truth.
+# These will be used for both normalizing input images and denormalizing the output image.
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406])
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225])
 
 
 def load_image_tensor(
@@ -66,18 +73,25 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     print(f"Using device: {device}")
 
+    # hyperparameters
+    style_weight = 1e6
+    content_weight = 1
+    epochs = 1000
+    lr = 0.1
+    # Input Image Size
+    # imagenet default size = 256
+    INPUT_IMAGE_SIZE = 512
+
     DATA_PATH = Path("data")
     CONTENT_IMAGE_PATH = DATA_PATH / "content.jpg"
-    STYLE_IMAGE_PATH = DATA_PATH / "style.jpg"
+    STYLE_IMAGE_PATH = DATA_PATH / "style2.jpg"
 
-    # ImageNet statistics for normalization, defined once as a single source of truth.
-    # These will be used for both normalizing input images and denormalizing the output image.
-    IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406])
-    IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225])
+    OUTPUT_PATH = Path("result") / f"{style_weight}_{lr}"
+    OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
     # load original images
-    content_image = load_image_tensor(CONTENT_IMAGE_PATH, 256, device)
-    style_image = load_image_tensor(STYLE_IMAGE_PATH, 256, device)
+    content_image = load_image_tensor(CONTENT_IMAGE_PATH, INPUT_IMAGE_SIZE, device)
+    style_image = load_image_tensor(STYLE_IMAGE_PATH, INPUT_IMAGE_SIZE, device)
 
     # --- 2. Build the Model ---
     style_transfer = StyleTransfer(device)
@@ -85,20 +99,17 @@ if __name__ == "__main__":
     model, content_loss_modules, style_loss_modules = style_transfer.build_model(
         content_image, style_image
     )
-    # The image to be optimized is initialized from random noise.
+
+    # option 1: The image to be optimized is initialized from random noise.
     # It has the same size and is on the same device as the content image.
-    generated_image = torch.randn(content_image.size(), device=device).requires_grad_(
-        True
-    )
+    # generated_image = torch.randn(content_image.size(), device=device).requires_grad_(True)
+
+    # option 2: Initialize the generated image from the original content image.
+    generated_image = content_image.clone().requires_grad_(True)
 
     # --- 3. Training Loop ---
     # Optimizer targets the generated image itself, not the model weights.
-    optimizer = torch.optim.Adam([generated_image], lr=0.01)
-
-    # hyperparameters
-    style_weight = 1000
-    content_weight = 1
-    epochs = 3000
+    optimizer = torch.optim.Adam([generated_image], lr=lr)
 
     print("Starting style transfer training...")
     for epoch in range(epochs):
@@ -120,19 +131,19 @@ if __name__ == "__main__":
             # backpropagation
             total_loss.backward()
 
-            if (epoch + 1) % 100 == 0:  # print progress every 100 epochs
+            if (epoch + 1) % 50 == 0:  # print progress every 100 epochs
                 # loss 의 데이터 구조: 예 - tensor(1502.7270, device='cuda:0') -> .item() 으로 순수한 값 1502.7270 (float 또는 int)만
                 print(
-                    f"Epoch {epoch +1} / {epochs} : Style Loss: {style_loss.item():.4f}, Content Loss: {content_loss.item():.4f}"
+                    f"Epoch {epoch +1} / {epochs} : Style Loss: {style_loss.item():.6f}, Content Loss: {content_loss.item():.6f}, Content Loss: {content_loss.item():.6f}, Total Loss: {total_loss.item():.6f}"
                 )
+            return total_loss  # return the total loss for the optimizer
 
         optimizer.step(closure)
 
-    # --- 4. Save the Generated Image ---
-    OUTPUT_PATH = Path("result")
-    OUTPUT_IMAGE_PATH = OUTPUT_PATH / "output.png"
-
-    generated_image = generated_image.detach()
-    generated_image = tensor_to_image(generated_image)
-    generated_image.save(OUTPUT_IMAGE_PATH)
-    print("Generated image saved to generated_image.png")
+        # <<<--- save intermediate image ---<<<
+        if (epoch + 1) % 50 == 0:
+            with torch.no_grad():  # Use no_grad for saving to conserve memory
+                intermediate_image = tensor_to_image(generated_image.detach())
+                save_path = OUTPUT_PATH / f"output_epoch_{epoch+1}.png"
+                intermediate_image.save(save_path)
+                print(f"\nSaved intermediate image to {save_path}")
